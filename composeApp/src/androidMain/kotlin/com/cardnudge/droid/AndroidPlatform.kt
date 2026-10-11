@@ -17,14 +17,18 @@ import android.provider.Settings
 import android.util.Log
 import com.cardnudge.R
 import com.cardnudge.data.KeyValueStore
+import com.cardnudge.data.LocationBackend
+import com.cardnudge.data.Nearby
+import com.cardnudge.data.NearbyStatus
 import com.cardnudge.data.Repository
 import com.cardnudge.domain.Alert
 import com.cardnudge.domain.GeoPoint
-import com.cardnudge.domain.Place
+import com.cardnudge.domain.Store
 import com.cardnudge.platform.Platform
 import com.cardnudge.platform.SetupItem
 import com.cardnudge.platform.SetupStep
 import com.cardnudge.platform.currentTimeMillis
+import com.cardnudge.platform.overpass
 import com.google.android.gms.location.Geofence
 import com.google.android.gms.location.GeofencingEvent
 import com.google.android.gms.location.GeofencingRequest
@@ -45,11 +49,17 @@ private const val TAG = "CardNudge"
  */
 object AppGraph {
     @Volatile private var repo: Repository? = null
+    @Volatile private var near: Nearby? = null
+    @Volatile private var store: PrefsStore? = null
+
+    private fun store(context: Context): PrefsStore =
+        store ?: synchronized(this) { store ?: PrefsStore(context.applicationContext).also { store = it } }
 
     fun repository(context: Context): Repository =
-        repo ?: synchronized(this) {
-            repo ?: Repository(PrefsStore(context.applicationContext)).also { repo = it }
-        }
+        repo ?: synchronized(this) { repo ?: Repository(store(context)).also { repo = it } }
+
+    fun nearby(context: Context): Nearby =
+        near ?: synchronized(this) { near ?: Nearby(store(context), repository(context), ::overpass).also { near = it } }
 }
 
 private class PrefsStore(context: Context) : KeyValueStore {
@@ -68,7 +78,7 @@ class AndroidPlatform(private val activity: Activity) : Platform {
     private val app: Context = activity.applicationContext
 
     override val repository: Repository = AppGraph.repository(app)
-    override val maxPlaces: Int = 100
+    override val nearby: Nearby = AppGraph.nearby(app)
     override val setupVersion: StateFlow<Int> = MutableStateFlow(0) // Resume events cover Android.
 
     override fun setupItems(): List<SetupItem> = buildList {
@@ -102,27 +112,12 @@ class AndroidPlatform(private val activity: Activity) : Platform {
         }
     }
 
-    override suspend fun currentLocation(): GeoPoint? {
-        if (!Perms.fine(app)) return null
-        val cts = CancellationTokenSource()
-        return try {
-            withTimeoutOrNull(20_000) {
-                LocationServices.getFusedLocationProviderClient(app)
-                    .getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, cts.token)
-                    .await(cts)
-                    ?.let { GeoPoint(it.latitude, it.longitude, it.accuracy) }
-            }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Log.w(TAG, "Location fix failed", e)
-            null
-        } finally {
-            cts.cancel()
-        }
+    override suspend fun refreshNearby(force: Boolean): NearbyStatus {
+        val status = nearby.update(AndroidLocation(app), currentTimeMillis(), force)
+        // Keep the background refresh scheduled; cheap to repeat because it keeps the existing one.
+        RefreshWorker.schedule(app)
+        return status
     }
-
-    override fun syncGeofences(places: List<Place>) = Geofences.sync(app, places)
 
     override fun postAlert(alert: Alert) = Alerts.post(app, alert)
 }
@@ -139,6 +134,36 @@ internal object Perms {
     private fun granted(ctx: Context, perm: String) = ctx.checkSelfPermission(perm) == PackageManager.PERMISSION_GRANTED
 }
 
+/** Location and geofences for [Nearby]. Holds only the application context, so background work can use it. */
+internal class AndroidLocation(context: Context) : LocationBackend {
+    private val app = context.applicationContext
+
+    override val maxWatched: Int = 100 // Android allows 100 geofences per app.
+
+    override fun canWatch(): Boolean = Perms.fine(app) && Perms.background(app)
+
+    override suspend fun currentLocation(): GeoPoint? {
+        if (!Perms.fine(app)) return null
+        val client = LocationServices.getFusedLocationProviderClient(app)
+        val cts = CancellationTokenSource()
+        return try {
+            val fix = withTimeoutOrNull(20_000) {
+                client.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, cts.token).await(cts)
+            } ?: client.lastLocation.await()
+            fix?.let { GeoPoint(it.latitude, it.longitude, it.accuracy) }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "Location fix failed", e)
+            null
+        } finally {
+            cts.cancel()
+        }
+    }
+
+    override fun watch(stores: List<Store>, center: GeoPoint, exitRadiusM: Double) = Geofences.sync(app, stores, center, exitRadiusM)
+}
+
 internal object Geofences {
     private fun pendingIntent(app: Context): PendingIntent = PendingIntent.getBroadcast(
         app, 0, Intent(app, GeofenceReceiver::class.java),
@@ -146,29 +171,43 @@ internal object Geofences {
         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE,
     )
 
-    fun sync(context: Context, places: List<Place>) {
+    /**
+     * Store fences fire after you stay inside for a minute, so driving past doesn't count.
+     * One larger fence around you fires on exit, which triggers the next lookup.
+     */
+    fun sync(context: Context, stores: List<Store>, center: GeoPoint, exitRadiusM: Double) {
         val app = context.applicationContext
         val client = LocationServices.getGeofencingClient(app)
-        val capped = places.take(100)
         client.removeGeofences(pendingIntent(app)).addOnCompleteListener {
-            if (capped.isEmpty() || !Perms.fine(app) || !Perms.background(app)) return@addOnCompleteListener
-            val fences = capped.map { p ->
+            if (!Perms.fine(app) || !Perms.background(app)) return@addOnCompleteListener
+            val storeFences = stores.take(99).map { s ->
                 Geofence.Builder()
-                    .setRequestId(p.id)
-                    .setCircularRegion(p.lat, p.lng, p.radiusM.toFloat())
+                    .setRequestId(s.id)
+                    .setCircularRegion(s.lat, s.lng, Nearby.STORE_RADIUS_M)
                     .setExpirationDuration(Geofence.NEVER_EXPIRE)
-                    .setTransitionTypes(Geofence.GEOFENCE_TRANSITION_ENTER)
+                    .setTransitionTypes(Geofence.GEOFENCE_TRANSITION_DWELL)
+                    .setLoiteringDelay(Nearby.DWELL_MS)
                     .setNotificationResponsiveness(30_000)
                     .build()
             }
-            val request = GeofencingRequest.Builder()
-                .setInitialTrigger(GeofencingRequest.INITIAL_TRIGGER_ENTER)
-                .addGeofences(fences)
+            val exitFence = Geofence.Builder()
+                .setRequestId(Nearby.EXIT_ID)
+                .setCircularRegion(center.lat, center.lng, exitRadiusM.toFloat())
+                .setExpirationDuration(Geofence.NEVER_EXPIRE)
+                .setTransitionTypes(Geofence.GEOFENCE_TRANSITION_EXIT)
+                .setNotificationResponsiveness(60_000)
                 .build()
+            // No initial trigger: being near a store when the list refreshes (say, at home) isn't a visit.
+            val requests = buildList {
+                if (storeFences.isNotEmpty()) add(GeofencingRequest.Builder().setInitialTrigger(0).addGeofences(storeFences).build())
+                add(GeofencingRequest.Builder().setInitialTrigger(0).addGeofence(exitFence).build())
+            }
             try {
-                client.addGeofences(request, pendingIntent(app))
-                    .addOnSuccessListener { Log.i(TAG, "Registered ${fences.size} geofences") }
-                    .addOnFailureListener { e -> Log.w(TAG, "Geofence registration failed", e) }
+                requests.forEach { request ->
+                    client.addGeofences(request, pendingIntent(app))
+                        .addOnSuccessListener { Log.i(TAG, "Registered ${request.geofences.size} geofences") }
+                        .addOnFailureListener { e -> Log.w(TAG, "Geofence registration failed", e) }
+                }
             } catch (e: SecurityException) {
                 Log.w(TAG, "Missing location permission", e)
             }
@@ -185,7 +224,7 @@ internal object Alerts {
         if (nm.getNotificationChannel(CHANNEL) == null) {
             nm.createNotificationChannel(
                 NotificationChannel(CHANNEL, "Card suggestions", NotificationManager.IMPORTANCE_HIGH).apply {
-                    description = "Which card to use when you arrive at a saved place"
+                    description = "Which card to use at the store you're in"
                 }
             )
         }
@@ -213,19 +252,22 @@ class GeofenceReceiver : BroadcastReceiver() {
             Log.w(TAG, "Geofence error ${event.errorCode}")
             return
         }
-        if (event.geofenceTransition != Geofence.GEOFENCE_TRANSITION_ENTER) return
-        val repo = AppGraph.repository(context)
-        event.triggeringGeofences.orEmpty().forEach { fence ->
-            repo.arrivalAlert(fence.requestId, currentTimeMillis())?.let { Alerts.post(context, it) }
+        val ids = event.triggeringGeofences.orEmpty().map { it.requestId }
+        val at = event.triggeringLocation?.let { GeoPoint(it.latitude, it.longitude, it.accuracy) }
+        when (event.geofenceTransition) {
+            Geofence.GEOFENCE_TRANSITION_EXIT -> if (Nearby.EXIT_ID in ids) RefreshWorker.runNow(context, at)
+            Geofence.GEOFENCE_TRANSITION_DWELL ->
+                AppGraph.nearby(context).dwellAlert(ids, at, currentTimeMillis())?.let { Alerts.post(context, it) }
         }
     }
 }
 
-/** Geofences are cleared on reboot and app update, so put them back. */
+/** Geofences are cleared on reboot and app update, so look around again and put them back. */
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action == Intent.ACTION_BOOT_COMPLETED || intent.action == Intent.ACTION_MY_PACKAGE_REPLACED) {
-            Geofences.sync(context, AppGraph.repository(context).places.value)
+            RefreshWorker.runNow(context, null)
+            RefreshWorker.schedule(context)
         }
     }
 }

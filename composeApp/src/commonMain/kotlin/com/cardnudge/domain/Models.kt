@@ -51,14 +51,24 @@ data class RewardCard(
     }
 }
 
+/** A shop, restaurant or other place to pay, as found on OpenStreetMap. */
 @Serializable
-data class Place(
+data class Store(
+    /** OSM element id such as "n123" or "w456"; stable across refreshes. */
     val id: String,
     val name: String,
     val category: Category,
     val lat: Double,
     val lng: Double,
-    val radiusM: Int,
+)
+
+/** The stores fetched around one spot, kept so alerts work offline and in the background. */
+@Serializable
+data class NearbyArea(
+    val lat: Double,
+    val lng: Double,
+    val fetchedAtMs: Long,
+    val stores: List<Store>,
 )
 
 data class GeoPoint(val lat: Double, val lng: Double, val accuracyM: Float)

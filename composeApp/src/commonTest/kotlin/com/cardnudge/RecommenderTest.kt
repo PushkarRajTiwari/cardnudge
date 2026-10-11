@@ -3,12 +3,11 @@ package com.cardnudge
 import com.cardnudge.data.KeyValueStore
 import com.cardnudge.data.Repository
 import com.cardnudge.domain.Category
-import com.cardnudge.domain.Place
+import com.cardnudge.domain.Store
 import com.cardnudge.domain.Recommender
 import com.cardnudge.domain.RewardCard
 import com.cardnudge.domain.formatDecimal
 import com.cardnudge.domain.formatRate
-import com.cardnudge.ui.parseCoords
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
@@ -35,8 +34,8 @@ class RecommenderTest {
     @Test fun noCardsMeansNoPick() = assertNull(Recommender.best(emptyList(), Category.DINING))
 
     @Test fun alertNamesBestCard() {
-        val place = Place("p", "Truffles", Category.DINING, 0.0, 0.0, 100)
-        val alert = Recommender.arrivalAlert(place, listOf(millennia, cashback))
+        val store = Store("n1", "Truffles", Category.DINING, 0.0, 0.0)
+        val alert = Recommender.arrivalAlert(store, listOf(millennia, cashback))
         assertEquals("🍽️ Use Millennia at Truffles", alert.title)
         assertEquals("5% on Dining. Next best: Cashback at 1%.", alert.body)
     }
@@ -50,27 +49,13 @@ class RecommenderTest {
         assertEquals("-0.50", formatDecimal(-0.5, 2))
     }
 
-    @Test fun parsesPastedCoordinates() {
-        assertEquals(12.9716, parseCoords("12.9716, 77.5946")?.lat)
-        assertNull(parseCoords("hello"))
-        assertNull(parseCoords("91, 10"))
-    }
-
-    @Test fun repositoryPersistsAndThrottlesAlerts() {
+    @Test fun repositoryPersistsCards() {
         val store = MemoryStore()
-        val repo = Repository(store)
-        repo.saveCard(millennia)
-        repo.addPlace(Place("p", "Truffles", Category.DINING, 0.0, 0.0, 100))
-
-        val reloaded = Repository(store)
-        assertEquals(listOf(millennia), reloaded.cards.value)
-        assertNotNull(reloaded.arrivalAlert("p", nowMs = 1_000_000))
-        assertNull(reloaded.arrivalAlert("p", nowMs = 1_000_000 + 60_000), "second alert within cooldown")
-        assertNotNull(reloaded.arrivalAlert("p", nowMs = 1_000_000 + 31 * 60_000))
-        assertNull(reloaded.arrivalAlert("unknown", nowMs = 0))
+        Repository(store).saveCard(millennia)
+        assertEquals(listOf(millennia), Repository(store).cards.value)
     }
 
-    private class MemoryStore : KeyValueStore {
+    class MemoryStore : KeyValueStore {
         private val strings = mutableMapOf<String, String>()
         private val longs = mutableMapOf<String, Long>()
         override fun getString(key: String) = strings[key]

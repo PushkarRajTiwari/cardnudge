@@ -20,14 +20,14 @@ object Recommender {
         return best?.let { Pick(it, bestRate, second, if (second == null) 0.0 else secondRate) }
     }
 
-    fun arrivalAlert(place: Place, cards: List<RewardCard>): Alert {
-        val pick = best(cards, place.category)
-            ?: return Alert(place.id, "${place.category.emoji} You're at ${place.name}", "Add your cards in CardNudge to get a suggestion here.")
+    fun arrivalAlert(store: Store, cards: List<RewardCard>): Alert {
+        val pick = best(cards, store.category)
+            ?: return Alert(store.id, "${store.category.emoji} You're at ${store.name}", "Add your cards in CardNudge to get a suggestion here.")
         val runner = pick.runnerUp?.let { " Next best: ${it.name} at ${it.reward(pick.runnerUpRate)}." }.orEmpty()
         return Alert(
-            id = place.id,
-            title = "${place.category.emoji} Use ${pick.card.name} at ${place.name}",
-            body = "${pick.card.reward(pick.rate)} on ${place.category.label}.$runner",
+            id = store.id,
+            title = "${store.category.emoji} Use ${pick.card.name} at ${store.name}",
+            body = "${pick.card.reward(pick.rate)} on ${store.category.label}.$runner",
         )
     }
 }
