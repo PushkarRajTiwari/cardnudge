@@ -27,20 +27,6 @@ object Tokens {
     val AccentDiag = Brush.linearGradient(Accent)
     val HeadlineBrush = Brush.horizontalGradient(listOf(Color.White, Color(0xFFC9BEFF), Cyan))
 
-    /** Gradients a card can wear; the index is stored on the card. */
-    val Palettes: List<List<Color>> = listOf(
-        listOf(Color(0xFF7C5CFF), Color(0xFF00D4FF)),
-        listOf(Color(0xFFFF4FD8), Color(0xFF7C5CFF)),
-        listOf(Color(0xFFFF8A3D), Color(0xFFFF3D7F)),
-        listOf(Color(0xFF00C9A7), Color(0xFF0072FF)),
-        listOf(Color(0xFF2B2B3F), Color(0xFF4A4A6A)),
-        listOf(Color(0xFFC9A227), Color(0xFF6B4F12)),
-    )
-    private val paletteBrushes = Palettes.map { Brush.linearGradient(it) }
-
-    fun paletteColors(index: Int) = Palettes[index.coerceIn(0, Palettes.lastIndex)]
-    fun paletteBrush(index: Int) = paletteBrushes[index.coerceIn(0, paletteBrushes.lastIndex)]
-
     val Pill = RoundedCornerShape(100.dp)
     val R14 = RoundedCornerShape(14.dp)
     val R18 = RoundedCornerShape(18.dp)

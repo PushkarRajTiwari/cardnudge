@@ -18,6 +18,8 @@ targets:
         UILaunchScreen: {}
         CADisableMinimumFrameDurationOnPhone: true
         NSLocationWhenInUseUsageDescription: CardNudge uses your location to save the places where you shop.
+        NSCameraUsageDescription: CardNudge uses the camera only when you take a photo of your card.
+        NSPhotoLibraryUsageDescription: CardNudge lets you choose a photo of your card from your library.
         NSLocationAlwaysAndWhenInUseUsageDescription: CardNudge checks when you arrive at a saved place so it can suggest the best card to pay with.
     settings:
       base:

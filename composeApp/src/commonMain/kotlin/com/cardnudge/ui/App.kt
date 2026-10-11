@@ -57,10 +57,11 @@ import com.cardnudge.domain.Pick
 import com.cardnudge.domain.Place
 import com.cardnudge.domain.Recommender
 import com.cardnudge.domain.RewardCard
-import com.cardnudge.domain.formatRate
+import com.cardnudge.domain.Looks
 import com.cardnudge.platform.Platform
 import com.cardnudge.platform.SetupItem
 import com.cardnudge.platform.SetupStep
+import com.cardnudge.platform.deleteCardPhoto
 
 private enum class Tab(val title: String) { CARDS("Cards"), PLACES("Places"), PICKS("Best picks") }
 
@@ -142,9 +143,14 @@ fun App(platform: Platform) {
         when (val s = sheet) {
             is Sheet.CardEditor -> CardEditorSheet(
                 card = s.card,
-                defaultPalette = cards.size % Tokens.Palettes.size,
+                defaultLook = Looks.all[cards.size % Looks.all.size],
                 onSave = repo::saveCard,
-                onDelete = s.card?.let { card -> { repo.deleteCard(card.id) } },
+                onDelete = s.card?.let { card ->
+                    {
+                        repo.deleteCard(card.id)
+                        card.photo?.let(::deleteCardPhoto)
+                    }
+                },
                 onDismiss = { sheet = null },
             )
             Sheet.PlaceEditor -> PlaceEditorSheet(
@@ -206,11 +212,13 @@ private fun Header() {
 
 @Composable
 private fun StatsRow(cards: List<RewardCard>, places: List<Place>) {
-    val top = remember(cards) { cards.mapNotNull { it.topCategory()?.second }.maxOrNull() }
+    val top = remember(cards) {
+        cards.mapNotNull { c -> c.topCategory()?.let { c to it.second } }.maxByOrNull { it.second }
+    }
     Row(Modifier.fillMaxWidth().padding(top = 22.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         StatTile(cards.size.toString(), "cards", Modifier.weight(1f))
         StatTile(places.size.toString(), "places", Modifier.weight(1f))
-        StatTile(top?.let(::formatRate) ?: "–", "top rate", Modifier.weight(1f))
+        StatTile(top?.let { (c, r) -> c.reward(r) } ?: "–", "top rate", Modifier.weight(1f))
     }
 }
 
@@ -275,41 +283,24 @@ private fun LazyListScope.cardsSection(cards: List<RewardCard>, onAdd: () -> Uni
 
 @Composable
 private fun CardTile(card: RewardCard, onClick: () -> Unit) {
-    val glow = Tokens.paletteColors(card.palette)[0]
-    val top = remember(card) { card.topCategory() }
     val summary = remember(card) {
         card.rates.entries.filter { it.value > 0 }.sortedByDescending { it.value }.take(4)
-            .joinToString("   ") { "${it.key.emoji} ${formatRate(it.value)}" }
+            .joinToString("   ") { "${it.key.emoji} ${card.reward(it.value)}" }
     }
-    Column(
-        Modifier.padding(bottom = 18.dp).fillMaxWidth().height(196.dp)
-            .shadow(16.dp, Tokens.R26, ambientColor = glow, spotColor = glow)
-            .clip(Tokens.R26).background(Tokens.paletteBrush(card.palette))
-            .clickable(onClick = onClick)
-            .padding(horizontal = 22.dp, vertical = 20.dp)
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                card.bank.ifBlank { "Card" }.uppercase(),
-                color = Color.White.copy(alpha = 0.85f), fontSize = 12.sp, fontWeight = FontWeight.Bold,
-                letterSpacing = 1.7.sp, modifier = Modifier.weight(1f),
-            )
-            top?.let { (cat, rate) ->
-                Text(
-                    "${cat.emoji} ${formatRate(rate)}", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold,
-                    modifier = Modifier.clip(Tokens.Pill).background(Color(0x33FFFFFF)).padding(horizontal = 10.dp, vertical = 5.dp),
-                )
-            }
-        }
-        // EMV chip
-        Box(
-            Modifier.padding(top = 16.dp).size(44.dp, 32.dp).clip(Tokens.R14)
-                .background(Brush.linearGradient(listOf(Color(0xFFFFE7A3), Color(0xFFC9A227))))
+    Column(Modifier.padding(bottom = 22.dp).fillMaxWidth()) {
+        CardFace(
+            art = card.art,
+            name = card.name,
+            bank = card.bank,
+            network = card.network,
+            photo = card.photo,
+            modifier = Modifier.clickable(onClick = onClick),
         )
-        Spacer(Modifier.weight(1f))
-        Text(card.name, color = Color.White, fontSize = 21.sp, fontWeight = FontWeight.ExtraBold)
         if (summary.isNotEmpty()) {
-            Text(summary, color = Color.White.copy(alpha = 0.9f), fontSize = 13.sp, fontWeight = FontWeight.Medium, modifier = Modifier.padding(top = 6.dp))
+            Text(
+                summary, color = Tokens.Muted, fontSize = 13.sp, fontWeight = FontWeight.Medium,
+                modifier = Modifier.padding(top = 10.dp, start = 6.dp),
+            )
         }
     }
 }
@@ -378,14 +369,14 @@ private fun PlaceRow(place: Place, pick: Pick?, onTest: () -> Unit, onLongClick:
     ) {
         Box(
             Modifier.size(50.dp).clip(CircleShape)
-                .background(pick?.let { Tokens.paletteBrush(it.card.palette) } ?: Tokens.AccentDiag),
+                .background(pick?.card?.art?.brush() ?: Tokens.AccentDiag),
             contentAlignment = Alignment.Center,
         ) { Text(place.category.emoji, fontSize = 22.sp) }
         Column(Modifier.weight(1f).padding(horizontal = 14.dp)) {
             Text(place.name, color = Tokens.Text, fontSize = 16.sp, fontWeight = FontWeight.Bold)
             Text("${place.category.label} · ${place.radiusM} m", color = Tokens.Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 4.dp))
             Text(
-                pick?.let { "Use ${it.card.name} · ${formatRate(it.rate)}" } ?: "Add a card to get a pick",
+                pick?.let { "Use ${it.card.name} · ${it.card.reward(it.rate)}" } ?: "Add a card to get a pick",
                 color = Tokens.Cyan, fontSize = 13.sp, fontWeight = FontWeight.Medium, modifier = Modifier.padding(top = 5.dp),
             )
         }
@@ -411,7 +402,7 @@ private fun LazyListScope.picksSection(picks: Map<Category, Pick?>) {
                 Text(cat.label, color = Tokens.Text, fontSize = 15.sp, fontWeight = FontWeight.Bold)
                 Text(pick?.card?.name ?: "Add a card", color = Tokens.Muted, fontSize = 13.sp, modifier = Modifier.padding(top = 3.dp))
             }
-            if (pick != null && pick.rate > 0) RateBadge(formatRate(pick.rate), Tokens.paletteBrush(pick.card.palette))
+            if (pick != null && pick.rate > 0) RateBadge(pick.card.reward(pick.rate), pick.card.art.brush())
         }
     }
 }
