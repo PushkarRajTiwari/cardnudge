@@ -1,0 +1,34 @@
+name: CardNudge
+options:
+  bundleIdPrefix: com.cardnudge
+  deploymentTarget:
+    iOS: "15.0"
+targets:
+  CardNudge:
+    type: application
+    platform: iOS
+    sources: [iosApp]
+    scheme: {}
+    info:
+      path: iosApp/Info.plist
+      properties:
+        CFBundleDisplayName: CardNudge
+        CFBundleShortVersionString: "0.2"
+        CFBundleVersion: "2"
+        UILaunchScreen: {}
+        CADisableMinimumFrameDurationOnPhone: true
+        NSLocationWhenInUseUsageDescription: CardNudge uses your location to save the places where you shop.
+        NSLocationAlwaysAndWhenInUseUsageDescription: CardNudge checks when you arrive at a saved place so it can suggest the best card to pay with.
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.cardnudge.app
+        FRAMEWORK_SEARCH_PATHS: $(SRCROOT)/../composeApp/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)
+        OTHER_LDFLAGS: [$(inherited), -framework, ComposeApp]
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+        SWIFT_VERSION: "5.0"
+    preBuildScripts:
+      - name: Compile Kotlin framework
+        basedOnDependencyAnalysis: false
+        script: |
+          cd "$SRCROOT/.."
+          ./gradlew :composeApp:embedAndSignAppleFrameworkForXcode
