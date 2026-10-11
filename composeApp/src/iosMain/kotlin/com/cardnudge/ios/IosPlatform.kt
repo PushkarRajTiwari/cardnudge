@@ -16,6 +16,7 @@ import com.cardnudge.platform.SetupStep
 import com.cardnudge.platform.currentTimeMillis
 import com.cardnudge.platform.overpass
 import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.cinterop.ObjCSignatureOverride
 import kotlinx.cinterop.useContents
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
@@ -271,9 +272,11 @@ private class LocationDelegate(private val owner: IosPlatform) : NSObject(), CLL
 
     override fun locationManager(manager: CLLocationManager, didFailWithError: NSError) = owner.onLocationError()
 
+    @ObjCSignatureOverride
     override fun locationManager(manager: CLLocationManager, didEnterRegion: CLRegion) =
         owner.onEntered(didEnterRegion.identifier)
 
+    @ObjCSignatureOverride
     override fun locationManager(manager: CLLocationManager, didExitRegion: CLRegion) =
         owner.onExited(didExitRegion.identifier)
 }
