@@ -26,7 +26,6 @@ import platform.CoreLocation.CLLocationManager
 import platform.CoreLocation.CLLocationManagerDelegateProtocol
 import platform.CoreLocation.CLRegion
 import platform.CoreLocation.CLRegionState
-import platform.CoreLocation.CLRegionStateInside
 import platform.CoreLocation.kCLAuthorizationStatusAuthorizedAlways
 import platform.CoreLocation.kCLAuthorizationStatusAuthorizedWhenInUse
 import platform.CoreLocation.kCLAuthorizationStatusNotDetermined
@@ -200,6 +199,6 @@ private class LocationDelegate(private val owner: IosPlatform) : NSObject(), CLL
         owner.onArrived(didEnterRegion.identifier)
 
     override fun locationManager(manager: CLLocationManager, didDetermineState: CLRegionState, forRegion: CLRegion) {
-        if (didDetermineState == CLRegionStateInside) owner.onArrived(forRegion.identifier)
+        if (didDetermineState == CLRegionState.CLRegionStateInside) owner.onArrived(forRegion.identifier)
     }
 }
