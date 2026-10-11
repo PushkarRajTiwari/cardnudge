@@ -38,7 +38,7 @@ class RecommenderTest {
         val place = Place("p", "Truffles", Category.DINING, 0.0, 0.0, 100)
         val alert = Recommender.arrivalAlert(place, listOf(millennia, cashback))
         assertEquals("🍽️ Use Millennia at Truffles", alert.title)
-        assertEquals("5% back on Dining. Next best: Cashback at 1%.", alert.body)
+        assertEquals("5% on Dining. Next best: Cashback at 1%.", alert.body)
     }
 
     @Test fun formatsNumbers() {
@@ -77,5 +77,38 @@ class RecommenderTest {
         override fun putString(key: String, value: String) { strings[key] = value }
         override fun getLong(key: String, default: Long) = longs[key] ?: default
         override fun putLong(key: String, value: Long) { longs[key] = value }
+    }
+}
+
+class CatalogTest {
+    @Test fun searchFindsAmexGoldByNickname() {
+        val hit = com.cardnudge.domain.CardCatalog.search("amex gold").first()
+        assertEquals("amex-gold", hit.id)
+        assertEquals(listOf("Gold", "Rose Gold", "White Gold"), hit.variants.map { it.label })
+    }
+
+    @Test fun artIdsAreUniqueAndResolve() {
+        val ids = com.cardnudge.domain.CardCatalog.cards.flatMap { c -> c.variants.map { it.id } }
+        assertEquals(ids.size, ids.toSet().size)
+        ids.forEach { assertNotNull(com.cardnudge.domain.CardCatalog.art(it)) }
+    }
+
+    @Test fun pointsCardsShowMultiplier() {
+        val card = RewardCard("g", "Gold Card", "Amex", rates = mapOf(Category.DINING to 4.0), points = true)
+        assertEquals("4x", card.reward(4.0))
+        assertEquals("1.5x", card.reward(1.5))
+    }
+
+    @Test fun oldSavesStillLoad() {
+        val json = """[{"id":"a","name":"Old","bank":"X","palette":2,"rates":{"DINING":3.0}}]"""
+        val store = object : KeyValueStore {
+            override fun getString(key: String) = if (key == "cards") json else null
+            override fun putString(key: String, value: String) {}
+            override fun getLong(key: String, default: Long) = default
+            override fun putLong(key: String, value: Long) {}
+        }
+        val card = Repository(store).cards.value.single()
+        assertEquals("look.sunset", card.art.id)
+        assertEquals(false, card.points)
     }
 }

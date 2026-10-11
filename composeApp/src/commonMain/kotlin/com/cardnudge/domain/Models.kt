@@ -23,10 +23,24 @@ data class RewardCard(
     val id: String,
     val name: String,
     val bank: String,
-    val palette: Int,
-    /** Reward rate in percent per category. A missing category falls back to [Category.OTHER]. */
+    /** Legacy colour index from before [artId]; still read for old saves. */
+    val palette: Int = 0,
+    /** Earn rate per \$1 per category. A missing category falls back to [Category.OTHER]. */
     val rates: Map<Category, Double>,
+    /** True when [rates] are points (shown as "4x"), false for cash back ("4%"). */
+    val points: Boolean = false,
+    /** Which [CardCatalog] card this came from, if any. */
+    val catalogId: String? = null,
+    /** Chosen face, a [CardArt] id from the catalog or [Looks]. */
+    val artId: String? = null,
+    /** File name of the user's own photo of the card, stored in app-private storage. */
+    val photo: String? = null,
 ) {
+    val art: CardArt get() = CardCatalog.art(artId) ?: Looks.fromLegacyPalette(palette)
+    val network: Network? get() = CardCatalog.card(catalogId)?.network
+
+    fun reward(rate: Double): String = formatReward(rate, points)
+
     fun rateFor(category: Category): Double = rates[category] ?: rates[Category.OTHER] ?: 0.0
 
     fun topCategory(): Pair<Category, Double>? {
@@ -56,6 +70,10 @@ data class Alert(val id: String, val title: String, val body: String)
 
 @OptIn(ExperimentalUuidApi::class)
 fun newId(): String = Uuid.random().toString()
+
+/** "4x" for points, "4%" for cash back. */
+fun formatReward(rate: Double, points: Boolean): String =
+    if (points) formatRate(rate).removeSuffix("%") + "x" else formatRate(rate)
 
 /** 5.0 -> "5%", 1.5 -> "1.5%", 0.25 -> "0.25%". */
 fun formatRate(rate: Double): String = formatDecimal(rate, 2).trimEnd('0').trimEnd('.') + "%"

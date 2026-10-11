@@ -23,11 +23,11 @@ object Recommender {
     fun arrivalAlert(place: Place, cards: List<RewardCard>): Alert {
         val pick = best(cards, place.category)
             ?: return Alert(place.id, "${place.category.emoji} You're at ${place.name}", "Add your cards in CardNudge to get a suggestion here.")
-        val runner = pick.runnerUp?.let { " Next best: ${it.name} at ${formatRate(pick.runnerUpRate)}." }.orEmpty()
+        val runner = pick.runnerUp?.let { " Next best: ${it.name} at ${it.reward(pick.runnerUpRate)}." }.orEmpty()
         return Alert(
             id = place.id,
             title = "${place.category.emoji} Use ${pick.card.name} at ${place.name}",
-            body = "${formatRate(pick.rate)} back on ${place.category.label}.$runner",
+            body = "${pick.card.reward(pick.rate)} on ${place.category.label}.$runner",
         )
     }
 }
