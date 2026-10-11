@@ -1,9 +1,10 @@
 package com.cardnudge.platform
 
+import com.cardnudge.data.Nearby
+import com.cardnudge.data.NearbyStatus
 import com.cardnudge.data.Repository
 import com.cardnudge.domain.Alert
-import com.cardnudge.domain.GeoPoint
-import com.cardnudge.domain.Place
+import com.cardnudge.domain.Osm
 import kotlinx.coroutines.flow.StateFlow
 
 enum class SetupStep { LOCATION, BACKGROUND_LOCATION, NOTIFICATIONS, BATTERY }
@@ -17,8 +18,7 @@ data class SetupItem(val step: SetupStep, val title: String, val done: Boolean)
 interface Platform {
     val repository: Repository
 
-    /** OS cap on monitored places: 100 geofences on Android, 20 regions on iOS. */
-    val maxPlaces: Int
+    val nearby: Nearby
 
     /** Bumped when permission state changes asynchronously, so the UI can refresh. */
     val setupVersion: StateFlow<Int>
@@ -28,13 +28,17 @@ interface Platform {
 
     fun fixSetup(step: SetupStep)
 
-    /** One location fix, or null if permission is missing or no fix arrived in time. */
-    suspend fun currentLocation(): GeoPoint?
-
-    /** Replaces the monitored regions with [places] (capped at [maxPlaces]). */
-    fun syncGeofences(places: List<Place>)
+    /** Looks up stores around you and starts watching the closest ones. */
+    suspend fun refreshNearby(force: Boolean): NearbyStatus
 
     fun postAlert(alert: Alert)
 }
 
 expect fun currentTimeMillis(): Long
+
+/** POSTs a form and returns the body of a 200 response, or null on any failure. */
+expect suspend fun httpPostForm(url: String, form: String, userAgent: String): String?
+
+/** Runs an Overpass query; the fetcher handed to [Nearby] on both platforms. */
+suspend fun overpass(query: String): String? =
+    httpPostForm(Osm.ENDPOINT, "data=" + Osm.formEncode(query), Osm.USER_AGENT)

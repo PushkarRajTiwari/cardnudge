@@ -1,12 +1,8 @@
-@file:OptIn(ExperimentalFoundationApi::class)
-
 package com.cardnudge.ui
 
-import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -26,15 +22,14 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -48,29 +43,33 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.cardnudge.data.NearbyStatus
 import com.cardnudge.domain.Category
+import com.cardnudge.domain.Geo
+import com.cardnudge.domain.Osm
+import com.cardnudge.domain.Store
+import com.cardnudge.domain.formatDecimal
 import com.cardnudge.domain.Pick
-import com.cardnudge.domain.Place
 import com.cardnudge.domain.Recommender
 import com.cardnudge.domain.RewardCard
 import com.cardnudge.domain.Looks
 import com.cardnudge.platform.Platform
 import com.cardnudge.platform.SetupItem
 import com.cardnudge.platform.SetupStep
+import com.cardnudge.platform.currentTimeMillis
 import com.cardnudge.platform.deleteCardPhoto
+import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 
-private enum class Tab(val title: String) { CARDS("Cards"), PLACES("Places"), PICKS("Best picks") }
+private enum class Tab(val title: String) { CARDS("Cards"), NEARBY("Nearby"), PICKS("Best picks") }
 
-private sealed interface Sheet {
-    data class CardEditor(val card: RewardCard?) : Sheet
-    data object PlaceEditor : Sheet
-}
-
-private class PendingDelete(val message: String, val action: () -> Unit)
+/** A store on the Nearby list with its distance from you, computed once per update. */
+private class NearStore(val store: Store, val distanceM: Int)
 
 /** The whole app UI, shared by Android and iOS. */
 @Composable
@@ -78,7 +77,11 @@ fun App(platform: Platform) {
     CardNudgeTheme {
         val repo = platform.repository
         val cards by repo.cards.collectAsStateWithLifecycle()
-        val places by repo.places.collectAsStateWithLifecycle()
+        val nearby = platform.nearby
+        val area by nearby.area.collectAsStateWithLifecycle()
+        val here by nearby.here.collectAsStateWithLifecycle()
+        val busy by nearby.busy.collectAsStateWithLifecycle()
+        val status by nearby.status.collectAsStateWithLifecycle()
         val setupVersion by platform.setupVersion.collectAsStateWithLifecycle()
 
         // Permissions can change in system settings while we're away, so re-read them on every resume.
@@ -90,14 +93,25 @@ fun App(platform: Platform) {
         val setup = remember(setupVersion, resumeCount) { platform.setupItems() }
         val granted = remember(setup) { setup.filter { it.done }.map { it.step } }
 
-        // Re-register geofences only when places or permissions actually change.
-        LaunchedEffect(places, granted) { platform.syncGeofences(places) }
+        // Look around on every return to the app and whenever permissions change. The lookup
+        // reuses saved stores unless you've moved, and is cancelled if the app goes away.
+        val locationOn = SetupStep.LOCATION in granted
+        LaunchedEffect(locationOn, granted, resumeCount) {
+            if (locationOn) platform.refreshNearby(force = false)
+        }
+        val scope = rememberCoroutineScope()
 
         val picks = remember(cards) { Category.entries.associateWith { Recommender.best(cards, it) } }
+        val nearStores = remember(area, here) {
+            val stores = area?.stores.orEmpty()
+            val at = here
+            if (at == null) emptyList<NearStore>()
+            else Geo.nearest(stores, at.lat, at.lng, NEARBY_LIST_SIZE)
+                .map { NearStore(it, Geo.distanceM(it, at.lat, at.lng).roundToInt()) }
+        }
 
         var tab by rememberSaveable { mutableStateOf(Tab.CARDS) }
-        var sheet by remember { mutableStateOf<Sheet?>(null) }
-        var pendingDelete by remember { mutableStateOf<PendingDelete?>(null) }
+        var editing by remember { mutableStateOf<CardEdit?>(null) }
 
         Box(Modifier.fillMaxSize().background(Tokens.Bg).glowBackdrop()) {
             LazyColumn(
@@ -105,76 +119,60 @@ fun App(platform: Platform) {
                 contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 24.dp, bottom = 130.dp),
             ) {
                 item(key = "header") { Header() }
-                item(key = "stats") { StatsRow(cards, places) }
+                item(key = "stats") { StatsRow(cards, area?.stores?.size ?: 0) }
                 item(key = "tabs") { Tabs(tab) { tab = it } }
                 when (tab) {
                     Tab.CARDS -> cardsSection(
                         cards,
-                        onAdd = { sheet = Sheet.CardEditor(null) },
-                        onEdit = { sheet = Sheet.CardEditor(it) },
+                        onAdd = { editing = CardEdit(null) },
+                        onEdit = { editing = CardEdit(it) },
                     )
-                    Tab.PLACES -> placesSection(
-                        places, picks, setup,
+                    Tab.NEARBY -> nearbySection(
+                        nearStores, picks, setup,
+                        updatedAtMs = area?.fetchedAtMs,
+                        busy = busy,
+                        status = status,
                         onFix = platform::fixSetup,
-                        onAdd = { sheet = Sheet.PlaceEditor },
-                        onTest = { place ->
-                            if (setup.any { it.step == SetupStep.NOTIFICATIONS && !it.done }) platform.fixSetup(SetupStep.NOTIFICATIONS)
-                            else platform.postAlert(Recommender.arrivalAlert(place, cards))
-                        },
-                        onDelete = { place ->
-                            pendingDelete = PendingDelete("Remove ${place.name}?") { repo.deletePlace(place.id) }
+                        onRefresh = { scope.launch { platform.refreshNearby(force = true) } },
+                        onTest = { store ->
+                            if (SetupStep.NOTIFICATIONS !in granted) platform.fixSetup(SetupStep.NOTIFICATIONS)
+                            else platform.postAlert(Recommender.arrivalAlert(store, cards))
                         },
                     )
                     Tab.PICKS -> picksSection(picks)
                 }
             }
 
-            if (tab != Tab.PICKS) {
+            if (tab == Tab.CARDS) {
                 Fab(
                     Modifier.align(Alignment.BottomEnd)
                         .windowInsetsPadding(WindowInsets.safeDrawing)
                         .padding(end = 22.dp, bottom = 28.dp)
-                ) {
-                    sheet = if (tab == Tab.CARDS) Sheet.CardEditor(null) else Sheet.PlaceEditor
-                }
+                ) { editing = CardEdit(null) }
             }
         }
 
-        when (val s = sheet) {
-            is Sheet.CardEditor -> CardEditorSheet(
-                card = s.card,
+        editing?.let { e ->
+            CardEditorSheet(
+                card = e.card,
                 defaultLook = Looks.all[cards.size % Looks.all.size],
                 onSave = repo::saveCard,
-                onDelete = s.card?.let { card ->
+                onDelete = e.card?.let { card ->
                     {
                         repo.deleteCard(card.id)
                         card.photo?.let(::deleteCardPhoto)
                     }
                 },
-                onDismiss = { sheet = null },
-            )
-            Sheet.PlaceEditor -> PlaceEditorSheet(
-                platform = platform,
-                locationAllowed = setup.none { it.step == SetupStep.LOCATION && !it.done },
-                atLimit = places.size >= platform.maxPlaces,
-                onSave = repo::addPlace,
-                onDismiss = { sheet = null },
-            )
-            null -> Unit
-        }
-
-        pendingDelete?.let { pd ->
-            AlertDialog(
-                onDismissRequest = { pendingDelete = null },
-                title = { Text(pd.message) },
-                confirmButton = { TextButton(onClick = { pd.action(); pendingDelete = null }) { Text("Remove") } },
-                dismissButton = { TextButton(onClick = { pendingDelete = null }) { Text("Cancel") } },
-                containerColor = Tokens.Surface,
-                titleContentColor = Tokens.Text,
+                onDismiss = { editing = null },
             )
         }
     }
 }
+
+/** The card editor is open; [card] is null when adding a new one. */
+private class CardEdit(val card: RewardCard?)
+
+private const val NEARBY_LIST_SIZE = 40
 
 /** Two soft colour blobs behind the header. Brushes are built once per size, not per frame. */
 private fun Modifier.glowBackdrop() = drawWithCache {
@@ -211,13 +209,13 @@ private fun Header() {
 }
 
 @Composable
-private fun StatsRow(cards: List<RewardCard>, places: List<Place>) {
+private fun StatsRow(cards: List<RewardCard>, storeCount: Int) {
     val top = remember(cards) {
         cards.mapNotNull { c -> c.topCategory()?.let { c to it.second } }.maxByOrNull { it.second }
     }
     Row(Modifier.fillMaxWidth().padding(top = 22.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         StatTile(cards.size.toString(), "cards", Modifier.weight(1f))
-        StatTile(places.size.toString(), "places", Modifier.weight(1f))
+        StatTile(storeCount.toString(), "stores nearby", Modifier.weight(1f))
         StatTile(top?.let { (c, r) -> c.reward(r) } ?: "–", "top rate", Modifier.weight(1f))
     }
 }
@@ -305,28 +303,62 @@ private fun CardTile(card: RewardCard, onClick: () -> Unit) {
     }
 }
 
-// ------------------------------------------------------------------ places
+// ------------------------------------------------------------------ nearby
 
-private fun LazyListScope.placesSection(
-    places: List<Place>,
+private fun LazyListScope.nearbySection(
+    stores: List<NearStore>,
     picks: Map<Category, Pick?>,
     setup: List<SetupItem>,
+    updatedAtMs: Long?,
+    busy: Boolean,
+    status: NearbyStatus?,
     onFix: (SetupStep) -> Unit,
-    onAdd: () -> Unit,
-    onTest: (Place) -> Unit,
-    onDelete: (Place) -> Unit,
+    onRefresh: () -> Unit,
+    onTest: (Store) -> Unit,
 ) {
     if (setup.any { !it.done }) item(key = "setup") { SetupPanel(setup, onFix) }
-    if (places.isEmpty()) {
-        item(key = "places-empty") {
-            EmptyState("📍", "No places yet", "Save the shops you visit. When you arrive, CardNudge tells you which card to use.", "Add a place", onAdd)
+    item(key = "nearby-status") { NearbyStatusRow(stores.size, updatedAtMs, busy, status, onRefresh) }
+    if (stores.isEmpty()) {
+        if (!busy) {
+            item(key = "nearby-empty") {
+                if (setup.any { it.step == SetupStep.LOCATION && !it.done }) {
+                    EmptyState("📍", "Where are you?", "Allow location and CardNudge finds the stores around you on its own.", "Allow location") { onFix(SetupStep.LOCATION) }
+                } else {
+                    EmptyState("🧭", "No stores yet", "Nothing found around you so far. Try again from somewhere with shops nearby.", "Look again", onRefresh)
+                }
+            }
         }
-        return
+    } else {
+        items(stores, key = { it.store.id }) { near ->
+            StoreRow(near, picks[near.store.category], onTest = { onTest(near.store) })
+        }
     }
-    items(places, key = { it.id }) { place ->
-        PlaceRow(place, picks[place.category], onTest = { onTest(place) }, onLongClick = { onDelete(place) })
+    item(key = "osm-credit") { Hint(Osm.ATTRIBUTION) }
+}
+
+@Composable
+private fun NearbyStatusRow(count: Int, updatedAtMs: Long?, busy: Boolean, status: NearbyStatus?, onRefresh: () -> Unit) {
+    val (text, color) = when {
+        busy -> "Looking for stores near you…" to Tokens.Muted
+        status == NearbyStatus.OFFLINE -> "Couldn't reach OpenStreetMap. Showing saved stores." to Tokens.Amber
+        status == NearbyStatus.NO_LOCATION && count == 0 -> "Couldn't get your location yet." to Tokens.Amber
+        updatedAtMs != null -> "Closest $count stores · updated ${ago(updatedAtMs)}" to Tokens.Muted
+        else -> "Stores appear here once CardNudge knows where you are." to Tokens.Muted
     }
-    item(key = "places-hint") { Hint("Long-press a place to remove it") }
+    Row(Modifier.fillMaxWidth().padding(bottom = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(text, color = color, fontSize = 13.sp, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
+        if (!busy) GhostButton("Refresh", Tokens.Cyan, onClick = onRefresh)
+    }
+}
+
+private fun ago(thenMs: Long): String {
+    val minutes = ((currentTimeMillis() - thenMs) / 60_000).coerceAtLeast(0)
+    return when {
+        minutes < 1 -> "just now"
+        minutes < 60 -> "$minutes min ago"
+        minutes < 48 * 60 -> "${minutes / 60} h ago"
+        else -> "${minutes / (24 * 60)} days ago"
+    }
 }
 
 @Composable
@@ -337,9 +369,9 @@ private fun SetupPanel(items: List<SetupItem>, onFix: (SetupStep) -> Unit) {
             .border(1.dp, Tokens.Violet.copy(alpha = 0.35f), Tokens.R22)
             .padding(horizontal = 18.dp, vertical = 16.dp)
     ) {
-        Text("⚡ Turn on arrival alerts", color = Tokens.Text, fontSize = 17.sp, fontWeight = FontWeight.Bold)
+        Text("⚡ Turn on store alerts", color = Tokens.Text, fontSize = 17.sp, fontWeight = FontWeight.Bold)
         Text(
-            "These let CardNudge notify you when you reach a saved place.",
+            "These let CardNudge notice the store you're in and tell you which card to use.",
             color = Tokens.Muted, fontSize = 13.sp, modifier = Modifier.padding(top = 6.dp, bottom = 4.dp),
         )
         items.forEach { item ->
@@ -359,11 +391,11 @@ private fun SetupPanel(items: List<SetupItem>, onFix: (SetupStep) -> Unit) {
 }
 
 @Composable
-private fun PlaceRow(place: Place, pick: Pick?, onTest: () -> Unit, onLongClick: () -> Unit) {
+private fun StoreRow(near: NearStore, pick: Pick?, onTest: () -> Unit) {
+    val store = near.store
     Row(
         Modifier.padding(bottom = 12.dp).fillMaxWidth().clip(Tokens.R20).background(Tokens.Surface)
             .border(1.dp, Tokens.Stroke, Tokens.R20)
-            .combinedClickable(onClick = {}, onLongClick = onLongClick)
             .padding(14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -371,10 +403,10 @@ private fun PlaceRow(place: Place, pick: Pick?, onTest: () -> Unit, onLongClick:
             Modifier.size(50.dp).clip(CircleShape)
                 .background(pick?.card?.art?.brush() ?: Tokens.AccentDiag),
             contentAlignment = Alignment.Center,
-        ) { Text(place.category.emoji, fontSize = 22.sp) }
+        ) { Text(store.category.emoji, fontSize = 22.sp) }
         Column(Modifier.weight(1f).padding(horizontal = 14.dp)) {
-            Text(place.name, color = Tokens.Text, fontSize = 16.sp, fontWeight = FontWeight.Bold)
-            Text("${place.category.label} · ${place.radiusM} m", color = Tokens.Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 4.dp))
+            Text(store.name, color = Tokens.Text, fontSize = 16.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text("${store.category.label} · ${distanceLabel(near.distanceM)}", color = Tokens.Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 4.dp))
             Text(
                 pick?.let { "Use ${it.card.name} · ${it.card.reward(it.rate)}" } ?: "Add a card to get a pick",
                 color = Tokens.Cyan, fontSize = 13.sp, fontWeight = FontWeight.Medium, modifier = Modifier.padding(top = 5.dp),
@@ -382,6 +414,12 @@ private fun PlaceRow(place: Place, pick: Pick?, onTest: () -> Unit, onLongClick:
         }
         GhostButton("Test", onClick = onTest)
     }
+}
+
+/** US units: feet up close, miles further out. */
+private fun distanceLabel(metres: Int): String {
+    val feet = metres * 3.28084
+    return if (feet < 1000) "${(feet / 10).roundToInt() * 10} ft" else "${formatDecimal(metres / 1609.344, 1)} mi"
 }
 
 // ------------------------------------------------------------------ picks

@@ -35,9 +35,11 @@ kotlin {
             implementation(libs.kotlinx.coroutines.android)
             implementation(libs.kotlinx.coroutines.play.services)
             implementation(libs.play.services.location)
+            implementation(libs.androidx.work.runtime)
         }
         commonTest.dependencies {
             implementation(libs.kotlin.test)
+            implementation(libs.kotlinx.coroutines.test)
         }
     }
 }
@@ -50,8 +52,8 @@ android {
         applicationId = "com.cardnudge"
         minSdk = 26
         targetSdk = 34
-        versionCode = 2
-        versionName = "0.2"
+        versionCode = 3
+        versionName = "0.3"
     }
     packaging {
         resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" }
