@@ -2,7 +2,7 @@
 
 Tells you which credit card to use at the store you're in, without you saving any places. It's built once with **Kotlin Multiplatform + Compose Multiplatform** and runs on Android and iPhone.
 
-- **Cards:** add your cards and their reward rate (%) for each kind of spend.
+- **Cards:** add your cards and their reward rates, and swipe through them like a wallet. **Scan card** uses the phone's document scanner (Google's on Android, Apple's on iPhone) to crop and straighten a photo of your real card, so it shows exactly as it looks. The scan stays on the phone. Cards you don't scan get a drawn face in their colours.
 - **Nearby:** CardNudge looks up the stores around you on OpenStreetMap and shows the best card for each. Stay at one for about a minute and you get a notification naming the best card and the next best.
 - **Best picks:** your top card for every category.
 

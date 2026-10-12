@@ -1,6 +1,12 @@
 package com.cardnudge.ui
 
 import androidx.compose.foundation.background
+import kotlin.math.absoluteValue
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -123,7 +129,7 @@ fun App(platform: Platform) {
                 item(key = "tabs") { Tabs(tab) { tab = it } }
                 when (tab) {
                     Tab.CARDS -> cardsSection(
-                        cards,
+                        cards, nearStores, picks,
                         onAdd = { editing = CardEdit(null) },
                         onEdit = { editing = CardEdit(it) },
                     )
@@ -268,37 +274,141 @@ private fun Fab(modifier: Modifier, onClick: () -> Unit) {
 
 // ------------------------------------------------------------------ cards
 
-private fun LazyListScope.cardsSection(cards: List<RewardCard>, onAdd: () -> Unit, onEdit: (RewardCard) -> Unit) {
+private fun LazyListScope.cardsSection(
+    cards: List<RewardCard>,
+    nearStores: List<NearStore>,
+    picks: Map<Category, Pick?>,
+    onAdd: () -> Unit,
+    onEdit: (RewardCard) -> Unit,
+) {
     if (cards.isEmpty()) {
         item(key = "cards-empty") {
             EmptyState("💳", "No cards yet", "Add the cards in your wallet with the reward rate for each kind of spend.", "Add your first card", onAdd)
         }
         return
     }
-    items(cards, key = { it.id }) { card -> CardTile(card) { onEdit(card) } }
-    item(key = "cards-hint") { Hint("Tap a card to edit or remove it") }
+    item(key = "wallet") { Wallet(cards, nearStores, picks, onEdit) }
+    item(key = "cards-hint") { Hint(if (cards.size > 1) "Swipe for your other cards · tap a card to edit" else "Tap the card to edit it") }
+}
+
+/** Google Wallet-style carousel: one big card, the next peeking in, and tiles for the card in front. */
+@Composable
+private fun Wallet(cards: List<RewardCard>, nearStores: List<NearStore>, picks: Map<Category, Pick?>, onEdit: (RewardCard) -> Unit) {
+    val pager = rememberPagerState { cards.size }
+    Column(Modifier.fillMaxWidth()) {
+        HorizontalPager(
+            state = pager,
+            key = { cards[it].id },
+            contentPadding = PaddingValues(start = EDGE, end = EDGE + 36.dp),
+            pageSpacing = 12.dp,
+            modifier = Modifier.bleed(EDGE),
+        ) { page ->
+            val card = cards[page]
+            CardFace(
+                art = card.art,
+                name = card.name,
+                bank = card.bank,
+                network = card.network,
+                photo = card.photo,
+                last4 = card.last4,
+                modifier = Modifier
+                    .padding(top = 6.dp, bottom = 18.dp)
+                    // Cards behind the front one sit slightly smaller, read in the draw phase only.
+                    .graphicsLayer {
+                        val away = ((pager.currentPage - page) + pager.currentPageOffsetFraction).absoluteValue.coerceAtMost(1f)
+                        val scale = 1f - 0.08f * away
+                        scaleX = scale
+                        scaleY = scale
+                        alpha = 1f - 0.15f * away
+                    }
+                    .clickable { onEdit(card) },
+            )
+        }
+        val front = cards.getOrNull(pager.currentPage) ?: return@Column
+        Text(
+            front.displayName, color = Tokens.Text, fontSize = 17.sp, fontWeight = FontWeight.SemiBold,
+            textAlign = TextAlign.Center, maxLines = 1, overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        if (cards.size > 1) PageDots(cards.size, pager.currentPage)
+        val tiles = remember(front, nearStores, picks) { walletTiles(front, nearStores, picks) }
+        TileGrid(front, tiles)
+    }
+}
+
+private val EDGE = 20.dp
+
+/** Lets the carousel run to the screen edges past the list's side padding, so the next card can peek in. */
+private fun Modifier.bleed(edge: Dp) = layout { measurable, constraints ->
+    val extra = edge.roundToPx()
+    val wide = constraints.copy(minWidth = constraints.maxWidth + 2 * extra, maxWidth = constraints.maxWidth + 2 * extra)
+    val placeable = measurable.measure(wide)
+    layout(constraints.maxWidth, placeable.height) { placeable.place(-extra, 0) }
 }
 
 @Composable
-private fun CardTile(card: RewardCard, onClick: () -> Unit) {
-    val summary = remember(card) {
-        card.rates.entries.filter { it.value > 0 }.sortedByDescending { it.value }.take(4)
-            .joinToString("   ") { "${it.key.emoji} ${card.reward(it.value)}" }
-    }
-    Column(Modifier.padding(bottom = 22.dp).fillMaxWidth()) {
-        CardFace(
-            art = card.art,
-            name = card.name,
-            bank = card.bank,
-            network = card.network,
-            photo = card.photo,
-            modifier = Modifier.clickable(onClick = onClick),
-        )
-        if (summary.isNotEmpty()) {
-            Text(
-                summary, color = Tokens.Muted, fontSize = 13.sp, fontWeight = FontWeight.Medium,
-                modifier = Modifier.padding(top = 10.dp, start = 6.dp),
+private fun PageDots(count: Int, current: Int) {
+    Row(Modifier.fillMaxWidth().padding(top = 10.dp), horizontalArrangement = Arrangement.Center) {
+        repeat(count) { i ->
+            val on = i == current
+            Box(
+                Modifier.padding(horizontal = 3.dp).size(if (on) 18.dp else 6.dp, 6.dp).clip(Tokens.Pill)
+                    .background(if (on) Tokens.Violet else Tokens.Stroke)
             )
+        }
+    }
+}
+
+private class WalletTile(val emoji: String, val caption: String, val value: String)
+
+/** Best category, other strong rates, and the closest store where this card is your best pick. */
+private fun walletTiles(card: RewardCard, nearStores: List<NearStore>, picks: Map<Category, Pick?>): List<WalletTile> {
+    val unit = if (card.points) "points" else "cash back"
+    val rates = card.rates.entries.filter { it.value > 0 }.sortedByDescending { it.value }
+    val best = rates.firstOrNull { it.key != Category.OTHER } ?: rates.firstOrNull()
+    val others = rates.filter { it != best }.map { (cat, rate) ->
+        WalletTile(cat.emoji, if (cat == Category.OTHER) "Everything else" else cat.label, "${card.reward(rate)} $unit")
+    }
+    val nearby = nearStores.firstOrNull { picks[it.store.category]?.card?.id == card.id }?.let {
+        WalletTile("📍", "Use it nearby at", "${it.store.name} · ${distanceLabel(it.distanceM)}")
+    }
+    return buildList {
+        best?.let { (cat, rate) -> add(WalletTile(cat.emoji, "Best for", "${if (cat == Category.OTHER) "Everything" else cat.label} ${card.reward(rate)}")) }
+        others.firstOrNull()?.let(::add)
+        nearby?.let(::add)
+        addAll(others.drop(1))
+    }.take(4)
+}
+
+@Composable
+private fun TileGrid(card: RewardCard, tiles: List<WalletTile>) {
+    if (tiles.isEmpty()) return
+    val art = card.art
+    val glow = art.glowColor()
+    Column(Modifier.padding(top = 18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        tiles.chunked(2).forEachIndexed { row, pair ->
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                pair.forEachIndexed { col, tile ->
+                    val index = row * 2 + col
+                    val shape = Tokens.R26
+                    val base = Modifier.weight(1f).height(108.dp).clip(shape)
+                    val (styled, ink) = when (index) {
+                        0 -> base.background(art.brush()) to (if (art.darkText) Color(0xFF2A2116) else Color.White)
+                        1 -> base.background(glow.copy(alpha = 0.22f)).background(Tokens.Surface.copy(alpha = 0.5f)) to Tokens.Text
+                        else -> base.background(Tokens.Surface2).border(1.dp, Tokens.Stroke, shape) to Tokens.Text
+                    }
+                    Column(styled.padding(14.dp), verticalArrangement = Arrangement.SpaceBetween) {
+                        Box(Modifier.size(38.dp).clip(CircleShape).background(Color.White.copy(alpha = 0.9f)), contentAlignment = Alignment.Center) {
+                            Text(tile.emoji, fontSize = 18.sp)
+                        }
+                        Column {
+                            Text(tile.caption, color = ink.copy(alpha = 0.75f), fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
+                            Text(tile.value, color = ink, fontSize = 15.sp, fontWeight = FontWeight.ExtraBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                    }
+                }
+                if (pair.size == 1) Spacer(Modifier.weight(1f))
+            }
         }
     }
 }

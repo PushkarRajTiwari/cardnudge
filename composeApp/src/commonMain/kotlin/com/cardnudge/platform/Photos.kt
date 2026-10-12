@@ -5,6 +5,11 @@ import androidx.compose.ui.graphics.ImageBitmap
 
 /** Opens the system camera or photo library; the result arrives through the callback given to [rememberPhotoPicker]. */
 interface PhotoPicker {
+    /**
+     * Opens the system document scanner, which finds the card's edges, straightens and crops
+     * it, so the result looks like the card itself. Falls back to the camera where unavailable.
+     */
+    fun scanCard()
     fun takePhoto()
     fun choosePhoto()
 }
