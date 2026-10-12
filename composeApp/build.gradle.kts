@@ -36,6 +36,7 @@ kotlin {
             implementation(libs.kotlinx.coroutines.play.services)
             implementation(libs.play.services.location)
             implementation(libs.androidx.work.runtime)
+            implementation(libs.mlkit.document.scanner)
         }
         commonTest.dependencies {
             implementation(libs.kotlin.test)

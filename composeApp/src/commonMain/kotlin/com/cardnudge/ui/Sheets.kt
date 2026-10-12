@@ -109,6 +109,7 @@ fun CardEditorSheet(
     var art by remember { mutableStateOf(card?.art ?: defaultLook) }
     var points by remember { mutableStateOf(card?.points ?: false) }
     var photo by remember { mutableStateOf(card?.photo) }
+    var last4 by remember { mutableStateOf(card?.last4.orEmpty()) }
     var query by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
     var saved by remember { mutableStateOf(false) }
@@ -154,12 +155,16 @@ fun CardEditorSheet(
             if (trimmed.isEmpty()) {
                 error = "Pick a card from the list or type its name."
                 false
+            } else if (last4.isNotEmpty() && last4.length != 4) {
+                error = "Enter all 4 last digits, or leave them blank."
+                false
             } else {
                 val parsed = rates.mapNotNull { (cat, text) -> text.toDoubleOrNull()?.takeIf { it > 0 }?.let { cat to it } }.toMap()
                 onSave(
                     RewardCard(
                         id = card?.id ?: newId(), name = trimmed, bank = bank.trim(), rates = parsed,
                         points = points, catalogId = catalogId, artId = art.id, photo = photo,
+                        last4 = last4.takeIf { it.length == 4 },
                     )
                 )
                 if (originalPhoto != null && originalPhoto != photo) deleteCardPhoto(originalPhoto)
@@ -168,7 +173,7 @@ fun CardEditorSheet(
             }
         },
     ) { close ->
-        CardFace(art, name.ifBlank { "Your card" }, bank, catalogCard?.network, photo, Modifier.padding(top = 10.dp, bottom = 4.dp))
+        CardFace(art, name.ifBlank { "Your card" }, bank, catalogCard?.network, photo, Modifier.padding(top = 10.dp, bottom = 4.dp), last4)
 
         SectionLabel("Find your card", Modifier.padding(top = 18.dp))
         Field(query, { query = it }, "Search, e.g. amex gold", Modifier.fillMaxWidth().padding(top = 8.dp))
@@ -187,6 +192,10 @@ fun CardEditorSheet(
         SectionLabel("Card", Modifier.padding(top = 20.dp))
         Field(name, { name = it; error = null }, "Card name, e.g. Gold Card", Modifier.fillMaxWidth().padding(top = 8.dp))
         Field(bank, { bank = it }, "Bank, e.g. American Express", Modifier.fillMaxWidth().padding(top = 10.dp))
+        Field(
+            last4, { input -> last4 = input.filter { it.isDigit() }.take(4); error = null },
+            "Last 4 digits (optional), e.g. 1008", Modifier.fillMaxWidth().padding(top = 10.dp), numeric = true,
+        )
 
         SectionLabel("Colour", Modifier.padding(top = 20.dp))
         val looks = remember(catalogId) { catalogCard?.variants.orEmpty() + Looks.all }
@@ -194,14 +203,15 @@ fun CardEditorSheet(
             looks.forEach { look -> LookChip(look, look.id == art.id) { art = look } }
         }
 
-        SectionLabel("Card photo", Modifier.padding(top = 20.dp))
+        SectionLabel("Your real card", Modifier.padding(top = 20.dp))
         Text(
-            "Optional. Shows your real card instead of the drawn one, and stays on this phone.",
+            "Scan the front of your card to show it exactly as it looks. The scan is cropped and straightened, and stays on this phone.",
             color = Tokens.Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp),
         )
-        Row(Modifier.padding(top = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            GhostButton("📷  Take photo", Tokens.Cyan, onClick = picker::takePhoto)
-            GhostButton("🖼  Choose photo", Tokens.Cyan, onClick = picker::choosePhoto)
+        PrimaryButton("📷  Scan card", Modifier.padding(top = 10.dp), onClick = picker::scanCard)
+        Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            GhostButton("Take photo", Tokens.Cyan, onClick = picker::takePhoto)
+            GhostButton("Choose photo", Tokens.Cyan, onClick = picker::choosePhoto)
         }
         if (photo != null) {
             GhostButton("Use the drawn card instead", Tokens.Muted, Modifier.padding(top = 8.dp)) {

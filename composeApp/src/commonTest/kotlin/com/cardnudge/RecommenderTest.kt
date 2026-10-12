@@ -84,6 +84,12 @@ class CatalogTest {
         assertEquals("1.5x", card.reward(1.5))
     }
 
+    @Test fun lastDigitsShowInName() {
+        val card = RewardCard("g", "Gold Card", "Amex", rates = emptyMap(), last4 = "1008")
+        assertEquals("Gold Card ••1008", card.displayName)
+        assertEquals("Gold Card", card.copy(last4 = null).displayName)
+    }
+
     @Test fun oldSavesStillLoad() {
         val json = """[{"id":"a","name":"Old","bank":"X","palette":2,"rates":{"DINING":3.0}}]"""
         val store = object : KeyValueStore {
@@ -95,5 +101,6 @@ class CatalogTest {
         val card = Repository(store).cards.value.single()
         assertEquals("look.sunset", card.art.id)
         assertEquals(false, card.points)
+        assertEquals(null, card.last4)
     }
 }

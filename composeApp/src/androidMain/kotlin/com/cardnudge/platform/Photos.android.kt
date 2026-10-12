@@ -1,13 +1,17 @@
 package com.cardnudge.platform
 
+import android.app.Activity
 import android.content.Context
+import android.content.ContextWrapper
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.ImageDecoder
+import android.graphics.Matrix
 import android.net.Uri
 import android.os.Build
 import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.Composable
@@ -20,6 +24,9 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.FileProvider
 import com.cardnudge.domain.newId
+import com.google.mlkit.vision.documentscanner.GmsDocumentScanning
+import com.google.mlkit.vision.documentscanner.GmsDocumentScannerOptions
+import com.google.mlkit.vision.documentscanner.GmsDocumentScanningResult
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -43,10 +50,10 @@ actual fun rememberPhotoPicker(onPicked: (String?) -> Unit): PhotoPicker {
     val callback by rememberUpdatedState(onPicked)
     val cameraFile = remember { File(app.cacheDir, "camera").apply { mkdirs() }.resolve("capture.jpg") }
 
-    fun importUri(uri: Uri?) {
+    fun importUri(uri: Uri?, landscape: Boolean = false) {
         if (uri == null) return callback(null)
         scope.launch {
-            callback(withContext(Dispatchers.IO) { importPhoto(app, uri) })
+            callback(withContext(Dispatchers.IO) { importPhoto(app, uri, landscape) })
             cameraFile.delete()
         }
     }
@@ -56,8 +63,32 @@ actual fun rememberPhotoPicker(onPicked: (String?) -> Unit): PhotoPicker {
         importUri(if (ok) Uri.fromFile(cameraFile) else null)
     }
 
-    return remember(gallery, camera) {
+    val scanner = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
+        val page = GmsDocumentScanningResult.fromActivityResultIntent(result.data)?.pages?.firstOrNull()
+        // Cards are wider than tall; a card scanned sideways is turned to match the others.
+        importUri(page?.imageUri, landscape = true)
+    }
+    val activity = LocalContext.current.findActivity()
+
+    return remember(gallery, camera, scanner, activity) {
         object : PhotoPicker {
+            override fun scanCard() {
+                val options = GmsDocumentScannerOptions.Builder()
+                    .setGalleryImportAllowed(false)
+                    .setPageLimit(1)
+                    .setResultFormats(GmsDocumentScannerOptions.RESULT_FORMAT_JPEG)
+                    .setScannerMode(GmsDocumentScannerOptions.SCANNER_MODE_BASE)
+                    .build()
+                if (activity == null) return takePhoto()
+                GmsDocumentScanning.getClient(options).getStartScanIntent(activity)
+                    .addOnSuccessListener { sender -> scanner.launch(IntentSenderRequest.Builder(sender).build()) }
+                    .addOnFailureListener { e ->
+                        // Scanner module unavailable (e.g. no Play services): use the plain camera.
+                        Log.w("CardNudge", "Document scanner unavailable", e)
+                        takePhoto()
+                    }
+            }
+
             override fun choosePhoto() =
                 gallery.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
 
@@ -67,9 +98,23 @@ actual fun rememberPhotoPicker(onPicked: (String?) -> Unit): PhotoPicker {
     }
 }
 
-/** Decodes [uri] upright and downscaled to [PHOTO_MAX_PX], then saves it as a JPEG. */
-private fun importPhoto(context: Context, uri: Uri): String? = try {
-    val bitmap = decodeScaled(context, uri, PHOTO_MAX_PX)
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
+}
+
+/**
+ * Decodes [uri] upright and downscaled to [PHOTO_MAX_PX], then saves it as a JPEG.
+ * With [landscape], a portrait image is turned a quarter so it sits like a card.
+ */
+private fun importPhoto(context: Context, uri: Uri, landscape: Boolean): String? = try {
+    var bitmap = decodeScaled(context, uri, PHOTO_MAX_PX)
+    if (landscape && bitmap.height > bitmap.width) {
+        val turned = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, Matrix().apply { postRotate(-90f) }, true)
+        bitmap.recycle()
+        bitmap = turned
+    }
     val name = "${newId()}.jpg"
     File(AndroidFiles.photosDir(), name).outputStream().use { bitmap.compress(Bitmap.CompressFormat.JPEG, 88, it) }
     bitmap.recycle()

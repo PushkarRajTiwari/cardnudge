@@ -35,11 +35,16 @@ data class RewardCard(
     val artId: String? = null,
     /** File name of the user's own photo of the card, stored in app-private storage. */
     val photo: String? = null,
+    /** Last 4 digits, shown only to tell cards apart; never the full number. */
+    val last4: String? = null,
 ) {
     val art: CardArt get() = CardCatalog.art(artId) ?: Looks.fromLegacyPalette(palette)
     val network: Network? get() = CardCatalog.card(catalogId)?.network
 
     fun reward(rate: Double): String = formatReward(rate, points)
+
+    /** "Gold Card ••1008", or just the name when no digits were entered. */
+    val displayName: String get() = if (last4.isNullOrBlank()) name else "$name ••$last4"
 
     fun rateFor(category: Category): Double = rates[category] ?: rates[Category.OTHER] ?: 0.0
 
